@@ -111,6 +111,35 @@ impl OsLogger {
         self
     }
 
+    pub fn from_env(mut self) -> Self {
+        let Ok(rust_log_env) = env::var("RUST_LOG") else {
+            return self;
+        };
+        let settings = rust_log_env.split(',');
+        for setting in settings {
+            let level;
+            let mut prefix = None;
+            match setting.split_once('=') {
+                Some((prefix_inner, level_inner)) => {
+                    prefix = Some(prefix_inner);
+                    level = level_inner;
+                }
+                None => {
+                    level = setting;
+                }
+            }
+            let Ok(level) = LevelFilter::from_str(level) else {
+                continue;
+            };
+            if let Some(prefix) = prefix {
+                self = self.target_level_filter(prefix, level);
+            } else {
+                self.default_level = level;
+            }
+        }
+        self
+    }
+
     pub fn init(self) -> Result<(), log::SetLoggerError> {
         log::set_boxed_logger(Box::new(self))
     }

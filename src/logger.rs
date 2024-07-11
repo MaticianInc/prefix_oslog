@@ -1,6 +1,7 @@
 use std::{borrow::Borrow, cmp::Ordering, collections::BTreeMap, env, str::FromStr};
 
 use crate::OsLog;
+use colored::Colorize;
 use dashmap::DashMap;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -62,6 +63,19 @@ impl Log for OsLogger {
                 .or_insert_with(|| OsLog::new(&self.subsystem, target));
             let message = std::format!("[{}] {}", target, record.args());
             logger.with_level(record.level().into(), &message);
+
+            if self.stderr_out {
+                let stderr_line = format!("{}: {}", record.level(), message);
+                eprintln!(
+                    "{}",
+                    match record.level() {
+                        Level::Error => stderr_line.red(),
+                        Level::Warn => stderr_line.yellow(),
+                        Level::Info => stderr_line.green(),
+                        Level::Debug => stderr_line.blue(),
+                        Level::Trace => stderr_line.cyan(),
+                    }
+                );
             }
         }
     }
@@ -72,12 +86,13 @@ impl Log for OsLogger {
 impl OsLogger {
     /// Creates a new logger. You must also call `init` to finalize the set up.
     /// By default the level filter will be set to `LevelFilter::Trace`.
-    pub fn new(subsystem: &str, global_level: LevelFilter) -> Self {
+    pub fn new(subsystem: &str, global_level: LevelFilter, stderr_out: bool) -> Self {
         Self {
             default_level: global_level,
             filters: BTreeMap::new(),
             loggers: DashMap::new(),
             subsystem: subsystem.to_string(),
+            stderr_out,
         }
     }
 

@@ -1,32 +1,68 @@
+use std::{borrow::Borrow, cmp::Ordering, collections::BTreeMap, env, str::FromStr};
+
 use crate::OsLog;
 use dashmap::DashMap;
-use log::{LevelFilter, Log, Metadata, Record};
+use log::{Level, LevelFilter, Log, Metadata, Record};
 
 pub struct OsLogger {
-    loggers: DashMap<String, (Option<LevelFilter>, OsLog)>,
+    default_level: LevelFilter,
+    filters: BTreeMap<Prefix, LevelFilter>,
+    loggers: DashMap<String, OsLog>,
     subsystem: String,
+    stderr_out: bool,
+}
+
+#[derive(PartialEq, Eq)]
+struct Prefix(String);
+
+impl PartialOrd for Prefix {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Prefix {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let length_order = other.0.len().cmp(&self.0.len());
+        match length_order {
+            Ordering::Less | Ordering::Greater => length_order,
+            Ordering::Equal => other.0.cmp(&self.0),
+        }
+    }
+}
+
+impl Borrow<str> for Prefix {
+    fn borrow(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<&str> for Prefix {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
 }
 
 impl Log for OsLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        let max_level = self
-            .loggers
-            .get(metadata.target())
-            .and_then(|pair| pair.0)
-            .unwrap_or_else(log::max_level);
-
-        metadata.level() <= max_level
+        let level = self
+            .filters
+            .iter()
+            .find_map(|(prefix, level)| metadata.target().strip_prefix(&prefix.0).map(|_| level))
+            .unwrap_or(&self.default_level);
+        metadata.level() <= *level
     }
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
-            let pair = self
+            let target = record.metadata().target();
+            let logger = self
                 .loggers
-                .entry(record.target().into())
-                .or_insert((None, OsLog::new(&self.subsystem, record.target())));
-
-            let message = std::format!("{}", record.args());
-            pair.1.with_level(record.level().into(), &message);
+                .entry(target.to_owned())
+                .or_insert_with(|| OsLog::new(&self.subsystem, target));
+            let message = std::format!("[{}] {}", target, record.args());
+            logger.with_level(record.level().into(), &message);
+            }
         }
     }
 
@@ -36,25 +72,26 @@ impl Log for OsLogger {
 impl OsLogger {
     /// Creates a new logger. You must also call `init` to finalize the set up.
     /// By default the level filter will be set to `LevelFilter::Trace`.
-    pub fn new(subsystem: &str) -> Self {
+    pub fn new(subsystem: &str, global_level: LevelFilter) -> Self {
         Self {
+            default_level: global_level,
+            filters: BTreeMap::new(),
             loggers: DashMap::new(),
             subsystem: subsystem.to_string(),
         }
     }
 
-    /// Only levels at or above `level` will be logged.
-    pub fn level_filter(self, level: LevelFilter) -> Self {
+    pub fn level_filter(level: LevelFilter) {
         log::set_max_level(level);
-        self
     }
 
     /// Sets or updates the category's level filter.
-    pub fn category_level_filter(self, category: &str, level: LevelFilter) -> Self {
-        self.loggers
-            .entry(category.into())
-            .and_modify(|(existing_level, _)| *existing_level = Some(level))
-            .or_insert((Some(level), OsLog::new(&self.subsystem, category)));
+    pub fn target_level_filter(mut self, prefix: &str, level: LevelFilter) -> Self {
+        if let Some(filter) = self.filters.get_mut(prefix) {
+            *filter = level;
+        } else {
+            self.filters.insert(prefix.into(), level);
+        }
 
         self
     }
